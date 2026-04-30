@@ -1,0 +1,29 @@
+# Binarios y artefactos Go
+/api
+/api.exe
+/bin/
+/cmd/api/api
+/cmd/api/api.exe
+hases-api
+hases-api.exe
+*.test
+*.out
+
+# Coverage
+coverage.out
+coverage.html
+
+# Variables sensibles
+.env
+.env.*
+!.env.example
+
+# Almacenamiento local de archivos subidos
+/storage/
+
+# IDE / SO
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

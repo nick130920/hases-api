@@ -1,0 +1,1009 @@
+openapi: 3.1.0
+info:
+  title: HASES RR.HH. API
+  version: "1.0.0"
+  description: |
+    API para el sistema de ciclo de vida del trabajador (contratación, exámenes
+    ocupacionales, inducción organizacional y funcional) de HASES.
+servers:
+  - url: http://localhost:8080
+    description: Local
+tags:
+  - name: meta
+  - name: auth
+  - name: vacancies
+  - name: applications
+  - name: documents
+  - name: interviews
+  - name: occupational
+  - name: induction
+  - name: functional
+  - name: epp
+  - name: catalog
+  - name: settings
+  - name: users
+  - name: audit
+  - name: files
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [meta]
+      summary: Healthcheck
+      security: []
+      responses:
+        "200": { description: ok }
+
+  /api/v1/health:
+    get:
+      tags: [meta]
+      summary: Healthcheck v1
+      security: []
+      responses:
+        "200": { description: ok }
+
+  /openapi.yaml:
+    get:
+      tags: [meta]
+      summary: OpenAPI spec (YAML)
+      security: []
+      responses:
+        "200":
+          description: spec
+          content:
+            application/yaml: { schema: { type: string } }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Login con email/contraseña, retorna JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_in_hours: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/me:
+    get:
+      tags: [auth]
+      summary: Datos del usuario autenticado
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: string, format: uuid }
+                  email:   { type: string }
+                  role:    { type: string }
+
+  /api/v1/public/vacancies/{slug}:
+    get:
+      tags: [vacancies]
+      summary: Vacante publicada (acceso público)
+      security: []
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicVacancy" }
+
+  /api/v1/public/applications:
+    post:
+      tags: [applications]
+      summary: Crear postulación pública para una vacante
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublicApplicationCreate" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  application_id: { type: string, format: uuid }
+                  status: { type: string }
+
+  /api/v1/vacancies:
+    get:
+      tags: [vacancies]
+      summary: Listar vacantes
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Vacancy" }
+    post:
+      tags: [vacancies]
+      summary: Crear vacante (con plantilla por defecto)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                requirements: { type: string }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  public_slug: { type: string }
+                  checklist_template_id: { type: string, format: uuid }
+
+  /api/v1/vacancies/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [vacancies]
+      summary: Detalle de vacante
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vacancy" }
+    patch:
+      tags: [vacancies]
+      summary: Actualizar vacante
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                requirements: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/vacancies/{id}/publish:
+    post:
+      tags: [vacancies]
+      summary: Publicar vacante
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/vacancies/{id}/archive:
+    post:
+      tags: [vacancies]
+      summary: Cerrar/archivar vacante
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/checklist-templates:
+    post:
+      tags: [vacancies]
+      summary: Crear plantilla de checklist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "201":
+          description: created
+          content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid } } } } }
+
+  /api/v1/checklist-templates/{tid}/items:
+    post:
+      tags: [vacancies]
+      summary: Agregar ítem a plantilla
+      parameters:
+        - in: path
+          name: tid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item_key, label]
+              properties:
+                item_key: { type: string }
+                label: { type: string }
+                required: { type: boolean }
+                requires_vehicle: { type: boolean }
+                sort_order: { type: integer }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications:
+    get:
+      tags: [applications]
+      summary: Listar postulaciones
+      parameters:
+        - in: query
+          name: vacancy_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Búsqueda en nombre, apellido, email
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApplicationListItem" }
+
+  /api/v1/applications/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [applications]
+      summary: Detalle postulación con documentos y completitud
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationDetail" }
+    patch:
+      tags: [applications]
+      summary: Actualizar campos de postulación
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                channel: { type: string }
+                cv_reference: { type: string }
+                requires_vehicle: { type: boolean }
+                notes: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/transition:
+    post:
+      tags: [applications]
+      summary: Cambiar estado del pipeline
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string }
+                reason: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/completeness:
+    get:
+      tags: [documents]
+      summary: Completitud documental computada
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Completeness" }
+
+  /api/v1/applications/{id}/documents/{itemID}/upload:
+    post:
+      tags: [documents]
+      summary: Subir archivo para un ítem de checklist
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - in: path
+          name: itemID
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { type: object, properties: { file_id: { type: string, format: uuid } } } } }
+        "413": { description: Archivo demasiado grande }
+        "415": { description: MIME no permitido }
+
+  /api/v1/applications/{id}/documents/{docID}/review:
+    patch:
+      tags: [documents]
+      summary: Revisar (aprobar/rechazar) un documento
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - in: path
+          name: docID
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [review_status]
+              properties:
+                review_status: { type: string, enum: [pending, approved, rejected] }
+                notes: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/interview-templates:
+    post:
+      tags: [interviews]
+      summary: Crear plantilla de entrevista
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                vacancy_id: { type: string, format: uuid, nullable: true }
+                title: { type: string }
+      responses:
+        "201": { description: created }
+
+  /api/v1/interview-templates/{tid}/questions:
+    post:
+      tags: [interviews]
+      summary: Agregar pregunta a plantilla
+      parameters:
+        - in: path
+          name: tid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question_text]
+              properties:
+                section_name: { type: string }
+                sort_order: { type: integer }
+                question_text: { type: string }
+                answer_type: { type: string, enum: [boolean, scale, text] }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/interview-sessions:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [interviews]
+      summary: Sesiones de entrevista de una postulación
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InterviewSession" }
+    post:
+      tags: [interviews]
+      summary: Crear sesión a partir de plantilla
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_id]
+              properties:
+                template_id: { type: string, format: uuid }
+                scheduled_at: { type: string, format: date-time }
+                location: { type: string }
+                modality: { type: string }
+      responses:
+        "201": { description: created }
+
+  /api/v1/interview-sessions/{sid}:
+    patch:
+      tags: [interviews]
+      summary: Actualizar programación / notas de la sesión
+      parameters:
+        - in: path
+          name: sid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scheduled_at: { type: string, format: date-time }
+                location: { type: string }
+                modality: { type: string }
+                interviewer_notes: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/interview-sessions/{sid}/responses:
+    put:
+      tags: [interviews]
+      summary: Guardar respuestas (upsert por pregunta)
+      parameters:
+        - in: path
+          name: sid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                responses:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/occupational.pdf:
+    get:
+      tags: [occupational]
+      summary: Descargar PDF prellenado de examen ocupacional
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: pdf
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+
+  /api/v1/applications/{id}/occupational/send:
+    post:
+      tags: [occupational]
+      summary: Registrar envío del examen a la IPS
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email_to: { type: string, format: email }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/ips-result:
+    post:
+      tags: [occupational]
+      summary: Registrar resultado IPS (apto/no apto/restricciones)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome: { type: string, enum: [fit, unfit, fit_restrictions] }
+                recommendations: { type: string }
+      responses:
+        "201": { description: created }
+
+  /api/v1/induction/org-modules:
+    get:
+      tags: [induction]
+      summary: Módulos organizacionales
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InductionOrgModule" }
+    post:
+      tags: [induction]
+      summary: Crear módulo organizacional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                body: { type: string }
+                sort_order: { type: integer }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/induction/org-progress:
+    post:
+      tags: [induction]
+      summary: Marcar avance en un módulo organizacional
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [module_id]
+              properties:
+                module_id: { type: string, format: uuid }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/induction/signatures:
+    post:
+      tags: [induction]
+      summary: Cargar firma (reglamento, políticas o contrato)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [kind, file]
+              properties:
+                kind: { type: string, enum: [regulation, policies, contract] }
+                file: { type: string, format: binary }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/induction/org/complete:
+    post:
+      tags: [induction]
+      summary: Cerrar inducción organizacional → pasa a teoría
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/functional-plan:
+    post:
+      tags: [functional]
+      summary: Asegurar/actualizar plan funcional con manual
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                manual_summary: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/functional/theory-complete:
+    post:
+      tags: [functional]
+      summary: Cierre de teoría → pendiente entrega EPP
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/epp-delivery:
+    post:
+      tags: [epp]
+      summary: Registrar entrega de EPP (ítems + firma opcional)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                items: { type: string, description: "JSON array as string" }
+                signature: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              properties:
+                items: { type: array, items: { type: object } }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/functional/practice-start:
+    post:
+      tags: [functional]
+      summary: Iniciar fase práctica (requiere EPP firmada)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+        "409": { description: requiere firma EPP }
+
+  /api/v1/applications/{id}/functional/evidence:
+    post:
+      tags: [functional]
+      summary: Registrar evidencia de práctica (con archivos)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                phase: { type: string, enum: [theory, practice] }
+                notes: { type: string }
+                actor: { type: string }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              properties:
+                phase: { type: string }
+                notes: { type: string }
+                actor: { type: string }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/functional/complete:
+    post:
+      tags: [functional]
+      summary: Cerrar plan funcional (onboarding completo)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/catalogs/rejection-reasons:
+    get:
+      tags: [catalog]
+      summary: Listar motivos de rechazo
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RejectionReason" }
+    post:
+      tags: [catalog]
+      summary: Crear motivo de rechazo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties: { label: { type: string } }
+      responses:
+        "201": { description: created }
+
+  /api/v1/catalogs/rejection-reasons/{id}:
+    delete:
+      tags: [catalog]
+      summary: Eliminar motivo de rechazo
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "204": { description: deleted }
+
+  /api/v1/company-settings:
+    get:
+      tags: [settings]
+      summary: Datos de la empresa
+      responses:
+        "200":
+          description: ok
+    patch:
+      tags: [settings]
+      summary: Actualizar datos de la empresa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                legal_name: { type: string }
+                tax_id: { type: string }
+                default_sender_email: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/audit-logs:
+    get:
+      tags: [audit]
+      summary: Últimos eventos auditados
+      responses:
+        "200": { description: ok }
+
+  /api/v1/files/{fid}:
+    get:
+      tags: [files]
+      summary: Descargar archivo por id
+      parameters:
+        - in: path
+          name: fid
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: binary
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+
+  /api/v1/users:
+    get:
+      tags: [users]
+      summary: Listar usuarios (admin)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+    post:
+      tags: [users]
+      summary: Crear usuario (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, role, full_name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                full_name: { type: string }
+                role: { type: string, enum: [admin, hr, evaluator, hiring_manager] }
+      responses:
+        "201": { description: created }
+
+  /api/v1/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    patch:
+      tags: [users]
+      summary: Editar usuario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string }
+                role: { type: string }
+                active: { type: boolean }
+                password: { type: string }
+      responses:
+        "200": { description: ok }
+    delete:
+      tags: [users]
+      summary: Desactivar usuario (soft)
+      responses:
+        "204": { description: deleted }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdParam:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: No autorizado
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+  schemas:
+    Vacancy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        requirements: { type: string }
+        status: { type: string, enum: [draft, published, closed] }
+        public_slug: { type: string }
+        published_at: { type: string, nullable: true }
+        checklist_template_id: { type: string, format: uuid }
+        created_at: { type: string }
+    PublicVacancy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        requirements: { type: string }
+        public_slug: { type: string }
+    PublicApplicationCreate:
+      type: object
+      required: [vacancy_id, first_name, email]
+      properties:
+        vacancy_id: { type: string, format: uuid }
+        first_name: { type: string }
+        last_name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        channel: { type: string }
+        cv_reference: { type: string }
+        requires_vehicle: { type: boolean }
+    ApplicationListItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        vacancy_id: { type: string, format: uuid }
+        status: { type: string }
+        first_name: { type: string }
+        last_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        channel: { type: string }
+        created_at: { type: string }
+    ApplicationDetail:
+      allOf:
+        - $ref: "#/components/schemas/ApplicationListItem"
+        - type: object
+          properties:
+            cv_reference: { type: string }
+            requires_vehicle: { type: boolean }
+            discarded_reason: { type: string }
+            notes: { type: string }
+            documents:
+              type: array
+              items: { $ref: "#/components/schemas/ApplicationDocument" }
+            completeness: { $ref: "#/components/schemas/Completeness" }
+    ApplicationDocument:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        checklist_item_id: { type: string, format: uuid }
+        item_key: { type: string }
+        label: { type: string }
+        review_status: { type: string, enum: [pending, approved, rejected] }
+        reviewer_notes: { type: string }
+        file_id: { type: string, format: uuid, nullable: true }
+        required: { type: boolean }
+    Completeness:
+      type: object
+      properties:
+        total: { type: integer }
+        with_file: { type: integer }
+        approved: { type: integer }
+        rejected: { type: integer }
+        pending: { type: integer }
+        required_total: { type: integer }
+        required_satisfied: { type: integer }
+        complete: { type: boolean }
+    InterviewSession:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        template_id: { type: string, format: uuid }
+        scheduled_at: { type: string, nullable: true }
+        location: { type: string }
+        modality: { type: string }
+        interviewer_notes: { type: string }
+        created_at: { type: string }
+    InductionOrgModule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        sort_order: { type: integer }
+    RejectionReason:
+      type: object
+      properties:
+        id: { type: integer }
+        label: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        full_name: { type: string }
+        role: { type: string }
+        active: { type: boolean }
+        created_at: { type: string }
