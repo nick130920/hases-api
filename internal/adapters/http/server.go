@@ -189,6 +189,8 @@ func (s *Server) Routes() http.Handler {
 
 			r.Post("/applications/{id}/endowment-delivery", s.recordEndowmentDelivery)
 			r.Get("/applications/{id}/endowment-deliveries", s.listEndowmentDeliveries)
+
+			r.Post("/admin/diag/email-test", s.sendTestEmail)
 		})
 	})
 
