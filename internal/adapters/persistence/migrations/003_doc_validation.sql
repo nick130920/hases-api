@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS document_templates (
 );
 
 -- Sembrar el item `foto` y `hv` en plantillas existentes para que las nuevas vacantes lo incluyan.
+-- +goose StatementBegin
 DO $$
 DECLARE
     t RECORD;
@@ -35,6 +36,7 @@ BEGIN
         ON CONFLICT (template_id, item_key) DO NOTHING;
     END LOOP;
 END $$;
+-- +goose StatementEnd
 
 -- +goose Down
 DROP TABLE IF EXISTS document_templates;
