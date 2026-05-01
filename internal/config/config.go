@@ -22,6 +22,8 @@ type Config struct {
 	SMTPUser string
 	SMTPPass string
 	SMTPFrom string
+
+	ResendAPIKey string
 }
 
 func Load() Config {
@@ -53,6 +55,8 @@ func Load() Config {
 		SMTPUser: envStr("SMTP_USER", ""),
 		SMTPPass: envStr("SMTP_PASS", ""),
 		SMTPFrom: envStr("SMTP_FROM", ""),
+
+		ResendAPIKey: envStr("RESEND_API_KEY", ""),
 	}
 }
 
