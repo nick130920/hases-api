@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/hases/hases-api/internal/app/mailer"
 	"github.com/hases/hases-api/internal/domain"
 )
 
@@ -101,15 +102,17 @@ func (s *Server) hiringDecision(w http.ResponseWriter, r *http.Request) {
 	s.notifyApplicantStatus(r.Context(), aid, domain.StatusInductionOrg)
 
 	if s.Mailer != nil && s.Mailer.Enabled() {
-		var em, fn string
+		var em, fn, ln string
 		_ = s.Pool.QueryRow(r.Context(),
-			`SELECT email, first_name FROM applications WHERE id=$1`, aid,
-		).Scan(&em, &fn)
+			`SELECT email, first_name, last_name FROM applications WHERE id=$1`, aid,
+		).Scan(&em, &fn, &ln)
 		if em != "" {
-			msg := "Hola " + fn + ",\n\nTu proceso ha sido aprobado. " +
-				"Para acceder al portal y firmar tu contrato usa el siguiente codigo: " + token + "\n\n" +
-				"Bienvenido a HASES."
-			_ = s.Mailer.Send(em, "HASES - Aprobacion y acceso al portal", msg)
+			tpl := mailer.RenderHiringDecision(mailer.HiringDecisionData{
+				FullName: strings.TrimSpace(fn + " " + ln),
+				Hired:    true,
+				Link:     s.invitationLink(token),
+			})
+			_ = s.Mailer.SendHTML(em, "HASES · Aprobación y acceso al portal", tpl.HTML, tpl.Text)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -118,19 +121,30 @@ func (s *Server) hiringDecision(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// notifyApplicantStatus envía un email simple cuando cambia el estado.
-// Es no-op si el mailer no está configurado.
+// notifyApplicantStatus envía un email contextual cuando cambia el estado de
+// la postulación. Hoy se usa principalmente para el caso de rechazo; el resto
+// de transiciones puede mantenerse interna sin notificar al candidato.
 func (s *Server) notifyApplicantStatus(ctx context.Context, aid uuid.UUID, status string) {
 	if s.Mailer == nil || !s.Mailer.Enabled() {
 		return
 	}
-	var em, fn string
+	var em, fn, ln, reason string
 	if err := s.Pool.QueryRow(ctx,
-		`SELECT email, first_name FROM applications WHERE id=$1`, aid,
-	).Scan(&em, &fn); err != nil || em == "" {
+		`SELECT email, first_name, last_name, COALESCE(discarded_reason, '')
+		 FROM applications WHERE id=$1`, aid,
+	).Scan(&em, &fn, &ln, &reason); err != nil || em == "" {
 		return
 	}
-	subj := "Actualizacion de tu postulacion"
-	body := "Hola " + fn + ",\n\nEl estado de tu proceso ha cambiado a: " + status + ".\n\nGracias."
-	_ = s.Mailer.Send(em, subj, body)
+	if status != domain.StatusRejected {
+		// Las demás transiciones se manejan por correos específicos
+		// (invitación al portal, hiring decision, IPS, etc.) o no requieren
+		// notificar al candidato.
+		return
+	}
+	tpl := mailer.RenderHiringDecision(mailer.HiringDecisionData{
+		FullName: strings.TrimSpace(fn + " " + ln),
+		Hired:    false,
+		Reason:   reason,
+	})
+	_ = s.Mailer.SendHTML(em, "HASES · Resultado del proceso", tpl.HTML, tpl.Text)
 }

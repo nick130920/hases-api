@@ -73,13 +73,37 @@ func (m *Mailer) Send(to, subject, body string) error {
 		return nil
 	}
 	if m.usingResend() {
-		return m.sendViaResend(to, subject, body, nil)
+		return m.sendViaResend(resendPayload{
+			From:    m.cfg.SMTPFrom,
+			To:      []string{to},
+			Subject: subject,
+			Text:    body,
+		})
 	}
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		m.cfg.SMTPFrom, to, subject, body,
 	))
 	return m.deliverSMTP(to, msg)
+}
+
+// SendHTML envía un email con cuerpo HTML y un fallback en texto plano para
+// clientes que no rendericen HTML. Usar para correos transaccionales con
+// botones o enlaces accionables (invitaciones, magic links, etc.).
+func (m *Mailer) SendHTML(to, subject, html, text string) error {
+	if !m.Enabled() {
+		return nil
+	}
+	if m.usingResend() {
+		return m.sendViaResend(resendPayload{
+			From:    m.cfg.SMTPFrom,
+			To:      []string{to},
+			Subject: subject,
+			Text:    text,
+			HTML:    html,
+		})
+	}
+	return m.deliverSMTP(to, m.buildAlternative(to, subject, text, html))
 }
 
 // SendWithAttachment envía un email multipart/mixed con un único adjunto.
@@ -92,10 +116,16 @@ func (m *Mailer) SendWithAttachment(to, subject, body, filename, mimeType string
 		mimeType = "application/octet-stream"
 	}
 	if m.usingResend() {
-		return m.sendViaResend(to, subject, body, &resendAttachment{
-			Filename:    filename,
-			Content:     base64.StdEncoding.EncodeToString(data),
-			ContentType: mimeType,
+		return m.sendViaResend(resendPayload{
+			From:    m.cfg.SMTPFrom,
+			To:      []string{to},
+			Subject: subject,
+			Text:    body,
+			Attachments: []*resendAttachment{{
+				Filename:    filename,
+				Content:     base64.StdEncoding.EncodeToString(data),
+				ContentType: mimeType,
+			}},
 		})
 	}
 	return m.deliverSMTP(to, m.buildMultipart(to, subject, body, filename, mimeType, data))
@@ -114,19 +144,11 @@ type resendPayload struct {
 	To          []string            `json:"to"`
 	Subject     string              `json:"subject"`
 	Text        string              `json:"text,omitempty"`
+	HTML        string              `json:"html,omitempty"`
 	Attachments []*resendAttachment `json:"attachments,omitempty"`
 }
 
-func (m *Mailer) sendViaResend(to, subject, body string, attach *resendAttachment) error {
-	payload := resendPayload{
-		From:    m.cfg.SMTPFrom,
-		To:      []string{to},
-		Subject: subject,
-		Text:    body,
-	}
-	if attach != nil {
-		payload.Attachments = []*resendAttachment{attach}
-	}
+func (m *Mailer) sendViaResend(payload resendPayload) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("resend marshal: %w", err)
@@ -152,6 +174,31 @@ func (m *Mailer) sendViaResend(to, subject, body string, attach *resendAttachmen
 }
 
 // ---- SMTP transport ----
+
+func (m *Mailer) buildAlternative(to, subject, text, html string) []byte {
+	boundary := "hases-alt-boundary"
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "From: %s\r\n", m.cfg.SMTPFrom)
+	fmt.Fprintf(&buf, "To: %s\r\n", to)
+	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&buf, "Content-Type: multipart/alternative; boundary=%s\r\n\r\n", boundary)
+
+	fmt.Fprintf(&buf, "--%s\r\n", boundary)
+	buf.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+	buf.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+	buf.WriteString(text)
+	buf.WriteString("\r\n")
+
+	fmt.Fprintf(&buf, "--%s\r\n", boundary)
+	buf.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	buf.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+	buf.WriteString(html)
+	buf.WriteString("\r\n")
+
+	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
+	return buf.Bytes()
+}
 
 func (m *Mailer) buildMultipart(to, subject, body, filename, mimeType string, data []byte) []byte {
 	boundary := "hases-mixed-boundary"

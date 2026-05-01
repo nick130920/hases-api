@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/hases/hases-api/internal/app/mailer"
 	"github.com/hases/hases-api/internal/auth"
 )
 
@@ -85,19 +86,31 @@ func (s *Server) inviteApplicationToPortal(w http.ResponseWriter, r *http.Reques
 	s.audit(r.Context(), actor, "application", &aid, "invite_to_portal", nil)
 
 	if s.Mailer != nil && s.Mailer.Enabled() {
-		var em, fn string
+		var em, fn, ln string
 		_ = s.Pool.QueryRow(r.Context(),
-			`SELECT email, first_name FROM applications WHERE id=$1`, aid,
-		).Scan(&em, &fn)
+			`SELECT email, first_name, last_name FROM applications WHERE id=$1`, aid,
+		).Scan(&em, &fn, &ln)
 		if em != "" {
-			body := "Hola " + fn + ",\n\n" +
-				"Has sido invitado al portal de HASES para continuar tu proceso. " +
-				"Define tu contrasena con el siguiente codigo de invitacion: " + token + "\n\n" +
-				"Gracias."
-			_ = s.Mailer.Send(em, "Invitacion al portal HASES", body)
+			tpl := mailer.RenderInvitation(mailer.InvitationData{
+				FullName: strings.TrimSpace(fn + " " + ln),
+				Link:     s.invitationLink(token),
+				Token:    token,
+				Days:     7,
+			})
+			_ = s.Mailer.SendHTML(em, "Invitación al portal HASES", tpl.HTML, tpl.Text)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"invitation_token": token})
+}
+
+// invitationLink builds the public URL the candidate receives in the email
+// body. It uses PORTAL_BASE_URL so the link points to the deployed front-end.
+func (s *Server) invitationLink(token string) string {
+	base := strings.TrimRight(strings.TrimSpace(s.Cfg.PortalBaseURL), "/")
+	if base == "" {
+		base = "http://localhost:4200"
+	}
+	return base + "/portal/aceptar-invitacion?token=" + token
 }
 
 // upsertWorkerInvitation crea (o reusa) el usuario worker ligado a la
