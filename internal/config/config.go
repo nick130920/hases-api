@@ -7,13 +7,15 @@ import (
 )
 
 type Config struct {
-	HTTPAddr        string
-	DatabaseURL     string
-	JWTSecret       string
-	JWTExpiration   int // hours
-	StorageDir      string
-	UploadMaxBytes  int64
-	UploadAllowMIME []string
+	HTTPAddr           string
+	DatabaseURL        string
+	JWTSecret          string
+	JWTExpiration      int // hours
+	StorageDir         string
+	UploadMaxBytes     int64
+	UploadAllowMIME    []string
+	CORSAllowedOrigins []string
+	PortalBaseURL      string
 
 	SMTPHost string
 	SMTPPort int
@@ -26,21 +28,25 @@ func Load() Config {
 	jwtExp := envInt("JWT_EXPIRATION_HOURS", 72)
 	dsn := envStr("DATABASE_URL", "postgres://hases:hases@localhost:5432/hases_rrhh?sslmode=disable")
 	secret := envStr("JWT_SECRET", "dev-secret-change-in-production")
-	addr := envStr("HTTP_ADDR", ":8080")
+	addr := resolveHTTPAddr()
 	storage := envStr("STORAGE_DIR", "./storage")
 
 	uploadMax := int64(envInt("UPLOAD_MAX_BYTES", 25*1024*1024))
 	allowed := envCSV("UPLOAD_ALLOWED_MIME",
 		"application/pdf,image/jpeg,image/png,image/webp,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
+	corsOrigins := envCSV("CORS_ALLOWED_ORIGINS", "http://localhost:4200,http://127.0.0.1:4200")
+
 	return Config{
-		HTTPAddr:        addr,
-		DatabaseURL:     dsn,
-		JWTSecret:       secret,
-		JWTExpiration:   jwtExp,
-		StorageDir:      storage,
-		UploadMaxBytes:  uploadMax,
-		UploadAllowMIME: allowed,
+		HTTPAddr:           addr,
+		DatabaseURL:        dsn,
+		JWTSecret:          secret,
+		JWTExpiration:      jwtExp,
+		StorageDir:         storage,
+		UploadMaxBytes:     uploadMax,
+		UploadAllowMIME:    allowed,
+		CORSAllowedOrigins: corsOrigins,
+		PortalBaseURL:      envStr("PORTAL_BASE_URL", "http://localhost:4200"),
 
 		SMTPHost: envStr("SMTP_HOST", ""),
 		SMTPPort: envInt("SMTP_PORT", 587),
@@ -48,6 +54,18 @@ func Load() Config {
 		SMTPPass: envStr("SMTP_PASS", ""),
 		SMTPFrom: envStr("SMTP_FROM", ""),
 	}
+}
+
+// resolveHTTPAddr prefers HTTP_ADDR, otherwise builds ":$PORT" (Railway/Heroku style),
+// finally defaults to ":8080".
+func resolveHTTPAddr() string {
+	if v := os.Getenv("HTTP_ADDR"); v != "" {
+		return v
+	}
+	if p := os.Getenv("PORT"); p != "" {
+		return ":" + p
+	}
+	return ":8080"
 }
 
 func envStr(k, d string) string {

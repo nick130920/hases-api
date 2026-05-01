@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -22,7 +23,8 @@ func mustUUID(s string) (uuid.UUID, bool) {
 
 func (s *Server) listVacancies(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Pool.Query(r.Context(), `
-		SELECT id, title, description, requirements, status, public_slug, published_at::text, checklist_template_id, created_at::text
+		SELECT id, title, description, requirements, status, public_slug, published_at::text,
+		       checklist_template_id, role_manual_body, role_manual_file_id, created_at::text
 		FROM vacancies ORDER BY created_at DESC`)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -32,13 +34,20 @@ func (s *Server) listVacancies(w http.ResponseWriter, r *http.Request) {
 	var out []map[string]any
 	for rows.Next() {
 		var id, ct uuid.UUID
-		var title, desc, req, st, slug, pub, created string
-		_ = rows.Scan(&id, &title, &desc, &req, &st, &slug, &pub, &ct, &created)
-		out = append(out, map[string]any{
+		var title, desc, req, st, slug, pub, manual, created string
+		var manualFid pgtype.UUID
+		_ = rows.Scan(&id, &title, &desc, &req, &st, &slug, &pub, &ct, &manual, &manualFid, &created)
+		row := map[string]any{
 			"id": id.String(), "title": title, "description": desc, "requirements": req,
 			"status": st, "public_slug": slug, "published_at": pub,
-			"checklist_template_id": ct.String(), "created_at": created,
-		})
+			"checklist_template_id": ct.String(),
+			"role_manual_body":      manual,
+			"created_at":            created,
+		}
+		if manualFid.Valid {
+			row["role_manual_file_id"] = uuid.UUID(manualFid.Bytes).String()
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -134,20 +143,27 @@ func (s *Server) getVacancy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := s.Pool.QueryRow(r.Context(), `
-		SELECT id, title, description, requirements, status, public_slug, published_at::text, checklist_template_id
+		SELECT id, title, description, requirements, status, public_slug, published_at::text,
+		       checklist_template_id, role_manual_body, role_manual_file_id
 		FROM vacancies WHERE id=$1`, id)
 	var vid uuid.UUID
-	var title, desc, req, st, slug string
+	var title, desc, req, st, slug, manual string
 	var pub pgtype.Text
 	var ct uuid.UUID
-	if err := row.Scan(&vid, &title, &desc, &req, &st, &slug, &pub, &ct); err != nil {
+	var manualFid pgtype.UUID
+	if err := row.Scan(&vid, &title, &desc, &req, &st, &slug, &pub, &ct, &manual, &manualFid); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"id": vid.String(), "title": title, "description": desc, "requirements": req,
 		"status": st, "public_slug": slug, "published_at": pub.String, "checklist_template_id": ct.String(),
-	})
+		"role_manual_body": manual,
+	}
+	if manualFid.Valid {
+		out["role_manual_file_id"] = uuid.UUID(manualFid.Bytes).String()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) patchVacancy(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +400,12 @@ func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
 		return
 	}
+	s.writeApplicationDetail(w, r, id)
+}
+
+// writeApplicationDetail produce el JSON del expediente completo de una postulación.
+// Reutilizado por staff y por el portal del trabajador (/me/application).
+func (s *Server) writeApplicationDetail(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	row := s.Pool.QueryRow(r.Context(), `
 		SELECT id, vacancy_id, status, first_name, last_name, email, phone, channel, cv_reference, requires_vehicle, discarded_reason, notes, created_at::text
 		FROM applications WHERE id=$1`, id)
@@ -398,9 +420,13 @@ func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
 	}
 	docs, _ := s.Pool.Query(r.Context(), `
 		SELECT d.id, d.checklist_item_id, d.file_id, d.review_status, d.reviewer_notes,
-		       i.item_key, i.label, i.required
+		       d.issued_at::text,
+		       i.item_key, i.label, i.required,
+		       dt.max_age_days, COALESCE(dt.requires_template, FALSE),
+		       COALESCE(dt.requires_issued_at, FALSE)
 		FROM application_documents d
 		JOIN checklist_items i ON i.id=d.checklist_item_id
+		LEFT JOIN document_types dt ON dt.item_key = i.item_key
 		WHERE d.application_id=$1
 		ORDER BY i.sort_order`, id)
 	defer docs.Close()
@@ -409,14 +435,24 @@ func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
 		var did, ciid uuid.UUID
 		var fid pgtype.UUID
 		var rs, rnotes, ik, lb string
-		var required bool
-		_ = docs.Scan(&did, &ciid, &fid, &rs, &rnotes, &ik, &lb, &required)
+		var required, requiresTemplate, requiresIssuedAt bool
+		var issuedAt pgtype.Text
+		var maxAge pgtype.Int4
+		_ = docs.Scan(&did, &ciid, &fid, &rs, &rnotes, &issuedAt, &ik, &lb, &required, &maxAge, &requiresTemplate, &requiresIssuedAt)
 		m := map[string]any{
 			"id": did.String(), "checklist_item_id": ciid.String(), "review_status": rs,
 			"reviewer_notes": rnotes, "item_key": ik, "label": lb, "required": required,
+			"requires_template":  requiresTemplate,
+			"requires_issued_at": requiresIssuedAt,
 		}
 		if fid.Valid {
 			m["file_id"] = uuid.UUID(fid.Bytes).String()
+		}
+		if issuedAt.Valid {
+			m["issued_at"] = issuedAt.String
+		}
+		if maxAge.Valid {
+			m["max_age_days"] = int(maxAge.Int32)
 		}
 		doclist = append(doclist, m)
 	}
@@ -536,19 +572,67 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "itemID"})
 		return
 	}
+	s.handleDocumentUpload(w, r, aid, itemID)
+}
+
+// handleDocumentUpload contiene la lógica común usada tanto por el endpoint
+// de RR.HH. como por el del portal del trabajador (/me/...). Aplica reglas
+// de antigüedad (max_age_days) y permite capturar issued_at desde el form.
+func (s *Server) handleDocumentUpload(w http.ResponseWriter, r *http.Request, aid, itemID uuid.UUID) {
 	if err := r.ParseMultipartForm(s.Cfg.UploadMaxBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "multipart"})
 		return
 	}
+
+	// Resolver metadatos del tipo de documento por item_key del checklist_item.
+	var itemKey string
+	var maxAge pgtype.Int4
+	var requiresIssuedAt bool
+	err := s.Pool.QueryRow(r.Context(), `
+		SELECT ci.item_key, dt.max_age_days, COALESCE(dt.requires_issued_at, FALSE)
+		FROM checklist_items ci
+		LEFT JOIN document_types dt ON dt.item_key = ci.item_key
+		WHERE ci.id=$1`, itemID).Scan(&itemKey, &maxAge, &requiresIssuedAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "checklist item not found"})
+		return
+	}
+
+	var issuedAt *time.Time
+	if raw := strings.TrimSpace(r.FormValue("issued_at")); raw != "" {
+		t, perr := parseFlexibleDate(raw)
+		if perr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issued_at format (use YYYY-MM-DD)"})
+			return
+		}
+		issuedAt = &t
+	}
+	if maxAge.Valid && requiresIssuedAt && issuedAt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issued_at_required"})
+		return
+	}
+	if maxAge.Valid && issuedAt != nil {
+		if ok, msg := validateIssuedAt(*issuedAt, int(maxAge.Int32)); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+			return
+		}
+	}
+
 	fid, status, err := s.persistFormFile(r, "file")
 	if err != nil {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
+	var iss any
+	if issuedAt != nil {
+		iss = *issuedAt
+	}
 	_, err = s.Pool.Exec(r.Context(), `
-		UPDATE application_documents SET file_id=$3, review_status='pending', reviewer_notes='', reviewed_by=NULL, reviewed_at=NULL
+		UPDATE application_documents
+		SET file_id=$3, issued_at=$4,
+		    review_status='pending', reviewer_notes='', reviewed_by=NULL, reviewed_at=NULL
 		WHERE application_id=$1 AND checklist_item_id=$2`,
-		aid, itemID, fid)
+		aid, itemID, fid, iss)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -560,6 +644,14 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), actor, "application_document", &itemID, "upload", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"file_id": fid.String()})
+}
+
+// parseFlexibleDate acepta YYYY-MM-DD o RFC3339.
+func parseFlexibleDate(raw string) (time.Time, error) {
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, raw)
 }
 
 func (s *Server) createInterviewTemplate(w http.ResponseWriter, r *http.Request) {
@@ -816,21 +908,35 @@ func (s *Server) ensureFunctionalPlan(w http.ResponseWriter, r *http.Request) {
 		ManualSummary string `json:"manual_summary"`
 	}
 	_ = readJSON(r, &body)
+	manual := strings.TrimSpace(body.ManualSummary)
+	if manual == "" {
+		// Snapshot desde la vacante: si la vacante tiene role_manual_body se usa
+		// como punto de partida del plan funcional.
+		_ = s.Pool.QueryRow(r.Context(), `
+			SELECT v.role_manual_body
+			FROM applications a JOIN vacancies v ON v.id = a.vacancy_id
+			WHERE a.id=$1`, aid).Scan(&manual)
+	}
 	_, err := s.Pool.Exec(r.Context(), `
 		INSERT INTO functional_plans (application_id, manual_summary) VALUES ($1,$2)
 		ON CONFLICT (application_id) DO UPDATE SET manual_summary=EXCLUDED.manual_summary`,
-		aid, body.ManualSummary)
+		aid, manual)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "true", "manual_summary": manual})
 }
 
 func (s *Server) completeTheory(w http.ResponseWriter, r *http.Request) {
 	aid, ok := mustUUID(chi.URLParam(r, "id"))
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
+		return
+	}
+	// Si hay cronograma teórico definido para la vacante, exigir 100%.
+	if ok, err := s.allActivitiesCompleted(r.Context(), aid, "theory"); err == nil && !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "theory_activities_pending"})
 		return
 	}
 	_, err := s.Pool.Exec(r.Context(), `
@@ -882,6 +988,10 @@ func (s *Server) completeFunctional(w http.ResponseWriter, r *http.Request) {
 	aid, ok := mustUUID(chi.URLParam(r, "id"))
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
+		return
+	}
+	if ok, err := s.allActivitiesCompleted(r.Context(), aid, "practice"); err == nil && !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "practice_activities_pending"})
 		return
 	}
 	_, err := s.Pool.Exec(r.Context(), `

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hases/hases-api/internal/app/mailer"
+	"github.com/hases/hases-api/internal/app/notifier"
 	"github.com/hases/hases-api/internal/app/pdf"
 	"github.com/hases/hases-api/internal/auth"
 	"github.com/hases/hases-api/internal/config"
@@ -23,9 +23,10 @@ import (
 )
 
 type Server struct {
-	Pool   *pgxpool.Pool
-	Cfg    config.Config
-	Mailer *mailer.Mailer
+	Pool     *pgxpool.Pool
+	Cfg      config.Config
+	Mailer   *mailer.Mailer
+	Notifier *notifier.Notifier
 }
 
 func (s *Server) Routes() http.Handler {
@@ -34,8 +35,12 @@ func (s *Server) Routes() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	corsOrigins := s.Cfg.CORSAllowedOrigins
+	if len(corsOrigins) == 0 {
+		corsOrigins = []string{"http://localhost:4200", "http://127.0.0.1:4200"}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:4200", "http://127.0.0.1:4200"},
+		AllowedOrigins:   corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
@@ -52,6 +57,9 @@ func (s *Server) Routes() http.Handler {
 
 		r.Get("/public/vacancies/{slug}", s.publicVacancyBySlug)
 		r.Post("/public/applications", s.publicCreateApplication)
+
+		r.Get("/public/document-templates/{itemKey}", s.downloadDocumentTemplate)
+		r.Post("/auth/accept-invitation", s.acceptInvitation)
 
 		r.Group(func(r chi.Router) {
 			r.Use(func(next http.Handler) http.Handler {
@@ -93,11 +101,11 @@ func (s *Server) Routes() http.Handler {
 			r.Put("/interview-sessions/{sid}/responses", s.putInterviewResponses)
 
 			r.Get("/applications/{id}/occupational.pdf", s.downloadOccupationalPDF)
-			r.Post("/applications/{id}/occupational/send", s.recordOccupationalSend)
+			r.Post("/applications/{id}/occupational/send", s.recordOccupationalSendWithEmail)
 			r.Post("/applications/{id}/ips-result", s.recordIPSResult)
 
 			r.Route("/induction/org-modules", func(r chi.Router) {
-				r.Get("/", s.listInductionModules)
+				r.Get("/", s.listInductionModulesEnriched)
 				r.Post("/", s.createInductionModule)
 			})
 			r.Post("/applications/{id}/induction/org-progress", s.upsertInductionProgress)
@@ -130,6 +138,53 @@ func (s *Server) Routes() http.Handler {
 				r.Patch("/{id}", s.patchUser)
 				r.Delete("/{id}", s.deactivateUser)
 			})
+
+			r.Get("/document-types", s.listDocumentTypes)
+			r.Post("/document-templates/{itemKey}", s.uploadDocumentTemplate)
+
+			r.Get("/vacancies/{id}/role-manual", s.getRoleManual)
+			r.Patch("/vacancies/{id}/role-manual", s.patchRoleManual)
+
+			r.Post("/applications/{id}/invite", s.inviteApplicationToPortal)
+			r.Post("/applications/{id}/hiring-decision", s.hiringDecision)
+
+			r.Route("/me", func(r chi.Router) {
+				r.Use(s.requireWorker)
+				r.Get("/application", s.workerGetApplication)
+				r.Post("/application/documents/{itemID}/upload", s.workerUploadDocument)
+				r.Get("/induction/org-modules", s.workerListInductionModules)
+				r.Post("/induction/org-progress", s.workerUpsertProgress)
+				r.Patch("/induction/progress/{moduleID}", s.workerProgressTick)
+				r.Post("/induction/signatures", s.workerSignature)
+				r.Get("/functional-plan", s.workerFunctionalPlan)
+				r.Post("/functional/evidence", s.workerEvidence)
+				r.Get("/functional/activities", s.workerListFunctionalActivities)
+				r.Post("/functional/activities/{aid}/complete", s.workerCompleteFunctionalActivity)
+			})
+
+			r.Get("/applications/{id}/functional/activities", s.listFunctionalActivities)
+			r.Get("/vacancies/{id}/functional-activities", s.listFunctionalActivityTemplates)
+			r.Post("/vacancies/{id}/functional-activities", s.createFunctionalActivityTemplate)
+			r.Patch("/functional-activity-templates/{tid}", s.patchFunctionalActivityTemplate)
+			r.Delete("/functional-activity-templates/{tid}", s.deleteFunctionalActivityTemplate)
+			r.Post("/applications/{id}/functional/activities/{aid}/complete", s.completeFunctionalActivity)
+
+			r.Post("/induction/org-modules/{mid}/media", s.uploadInductionMedia)
+			r.Delete("/induction/org-media/{mediaID}", s.deleteInductionMedia)
+
+			r.Patch("/applications/{id}/ips-result/upload", s.uploadIPSResultFile)
+
+			r.Route("/admin/outbox", func(r chi.Router) {
+				r.Get("/", s.listOutbox)
+				r.Post("/{id}/retry", s.retryOutbox)
+			})
+			r.Get("/applications/overdue", s.listOverdueApplications)
+			r.Get("/reports/pipeline-time.csv", s.exportPipelineTimeCSV)
+			r.Get("/reports/ips-monthly.csv", s.exportIPSMonthlyCSV)
+			r.Get("/reports/onboarding-completed.csv", s.exportOnboardingCompletedCSV)
+
+			r.Post("/applications/{id}/endowment-delivery", s.recordEndowmentDelivery)
+			r.Get("/applications/{id}/endowment-deliveries", s.listEndowmentDeliveries)
 		})
 	})
 
@@ -204,9 +259,16 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	s.streamFileByID(w, r, uid, true)
+}
+
+// streamFileByID resuelve un archivo por su id y lo sirve usando http.ServeContent
+// para que se respete `Range` (necesario para streaming de video) y caching.
+// Si attachment=true, fuerza Content-Disposition: attachment para descarga directa.
+func (s *Server) streamFileByID(w http.ResponseWriter, r *http.Request, fileID uuid.UUID, attachment bool) {
 	var key, name, mime string
-	err = s.Pool.QueryRow(r.Context(),
-		`SELECT storage_key, original_name, mime_type FROM files WHERE id=$1`, uid,
+	err := s.Pool.QueryRow(r.Context(),
+		`SELECT storage_key, original_name, mime_type FROM files WHERE id=$1`, fileID,
 	).Scan(&key, &name, &mime)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -219,9 +281,19 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		http.Error(w, "stat", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-	_, _ = io.Copy(w, f)
+	if attachment {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	} else {
+		w.Header().Set("Content-Disposition", `inline; filename="`+name+`"`)
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
+	http.ServeContent(w, r, name, stat.ModTime(), f)
 }
 
 func (s *Server) downloadOccupationalPDF(w http.ResponseWriter, r *http.Request) {

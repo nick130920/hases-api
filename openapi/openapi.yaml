@@ -24,6 +24,11 @@ tags:
   - name: users
   - name: audit
   - name: files
+  - name: worker
+  - name: hiring
+  - name: outbox
+  - name: reports
+  - name: sla
 security:
   - bearerAuth: []
 
@@ -875,6 +880,607 @@ paths:
       responses:
         "204": { description: deleted }
 
+  /api/v1/document-types:
+    get:
+      tags: [documents]
+      summary: Catálogo de tipos de documento (con max_age_days, requires_template, etc.)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DocumentType" }
+
+  /api/v1/document-templates/{itemKey}:
+    post:
+      tags: [documents]
+      summary: Subir/reemplazar plantilla oficial para un item_key (admin/hr)
+      parameters:
+        - in: path
+          name: itemKey
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/public/document-templates/{itemKey}:
+    get:
+      tags: [documents]
+      summary: Descargar plantilla oficial de un tipo de documento (público)
+      security: []
+      parameters:
+        - in: path
+          name: itemKey
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: archivo
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+
+  /api/v1/vacancies/{id}/role-manual:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [vacancies]
+      summary: Manual de funciones por cargo (texto + archivo)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleManual" }
+    patch:
+      tags: [vacancies]
+      summary: Actualizar manual de funciones (admin/hr)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: { type: string }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                body: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/invite:
+    post:
+      tags: [worker]
+      summary: Generar token de invitación al portal del trabajador
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation_token: { type: string }
+
+  /api/v1/auth/accept-invitation:
+    post:
+      tags: [worker]
+      summary: Aceptar invitación al portal y definir contraseña
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:    { type: string }
+                password: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_in_hours: { type: integer }
+
+  /api/v1/me/application:
+    get:
+      tags: [worker]
+      summary: Detalle de la postulación del worker autenticado
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationDetail" }
+
+  /api/v1/me/application/documents/{itemID}/upload:
+    post:
+      tags: [worker]
+      summary: Subir documento (worker) con validaciones de antigüedad
+      parameters:
+        - in: path
+          name: itemID
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:      { type: string, format: binary }
+                issued_at: { type: string, format: date }
+      responses:
+        "200": { description: ok }
+        "400": { description: validación (issued_at requerido o expirado) }
+
+  /api/v1/me/induction/org-modules:
+    get:
+      tags: [worker]
+      summary: Módulos de inducción organizacional con media + progreso del worker
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InductionOrgModuleWithMedia" }
+
+  /api/v1/me/induction/org-progress:
+    post:
+      tags: [worker]
+      summary: Marcar avance en un módulo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [module_id]
+              properties:
+                module_id: { type: string, format: uuid }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/me/induction/progress/{moduleID}:
+    patch:
+      tags: [worker]
+      summary: Reportar viewed_seconds (auto-completa al alcanzar duración)
+      parameters:
+        - in: path
+          name: moduleID
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                viewed_seconds: { type: integer }
+                mark_complete:  { type: boolean }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/me/induction/signatures:
+    post:
+      tags: [worker]
+      summary: Cargar firma electrónica (multipart con file o JSON con signature_data)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [kind, file]
+              properties:
+                kind: { type: string, enum: [regulation, policies, contract] }
+                file: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              required: [kind, signature_data]
+              properties:
+                kind:           { type: string, enum: [regulation, policies, contract] }
+                signature_data: { type: string, description: "data:image/png;base64,..." }
+      responses:
+        "201": { description: created }
+
+  /api/v1/me/functional-plan:
+    get:
+      tags: [worker]
+      summary: Plan funcional del worker (manual + estado)
+      responses:
+        "200": { description: ok }
+
+  /api/v1/me/functional/evidence:
+    post:
+      tags: [worker]
+      summary: Cargar evidencia funcional (worker)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                phase: { type: string, enum: [theory, practice] }
+                notes: { type: string }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        "201": { description: created }
+
+  /api/v1/me/functional/activities:
+    get:
+      tags: [worker]
+      summary: Cronograma funcional del worker (teoría + práctica)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FunctionalActivity" }
+
+  /api/v1/me/functional/activities/{aid}/complete:
+    post:
+      tags: [worker]
+      summary: Marcar una actividad como completada (con evidencia opcional)
+      parameters:
+        - in: path
+          name: aid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/hiring-decision:
+    post:
+      tags: [hiring]
+      summary: Decisión final del empleador (hire | reject)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:  { type: string, enum: [hire, reject] }
+                reason_id: { type: integer, nullable: true }
+                notes:     { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/functional/activities:
+    get:
+      tags: [functional]
+      summary: Cronograma funcional de la postulación (RR.HH.)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FunctionalActivity" }
+
+  /api/v1/vacancies/{id}/functional-activities:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [functional]
+      summary: Listar plantillas de actividades de la vacante
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FunctionalActivity" }
+    post:
+      tags: [functional]
+      summary: Crear actividad de cronograma para una vacante
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase, title]
+              properties:
+                phase:             { type: string, enum: [theory, practice] }
+                sort_order:        { type: integer }
+                title:             { type: string }
+                description:       { type: string }
+                evidence_required: { type: boolean }
+      responses:
+        "201": { description: created }
+
+  /api/v1/functional-activity-templates/{tid}:
+    parameters:
+      - in: path
+        name: tid
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [functional]
+      summary: Actualizar plantilla de actividad
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phase:             { type: string }
+                sort_order:        { type: integer }
+                title:             { type: string }
+                description:       { type: string }
+                evidence_required: { type: boolean }
+      responses:
+        "200": { description: ok }
+    delete:
+      tags: [functional]
+      summary: Eliminar plantilla de actividad
+      responses:
+        "204": { description: deleted }
+
+  /api/v1/applications/{id}/functional/activities/{aid}/complete:
+    post:
+      tags: [functional]
+      summary: Marcar actividad como completada (RR.HH.)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - in: path
+          name: aid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/induction/org-modules/{mid}/media:
+    post:
+      tags: [induction]
+      summary: Agregar recurso audiovisual a un módulo
+      parameters:
+        - in: path
+          name: mid
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [kind, file]
+              properties:
+                kind:             { type: string, enum: [video, image, pdf, audio] }
+                title:            { type: string }
+                sort_order:       { type: integer }
+                duration_seconds: { type: integer }
+                file:             { type: string, format: binary }
+      responses:
+        "201": { description: created }
+
+  /api/v1/induction/org-media/{mediaID}:
+    delete:
+      tags: [induction]
+      summary: Eliminar recurso audiovisual
+      parameters:
+        - in: path
+          name: mediaID
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: deleted }
+
+  /api/v1/applications/{id}/ips-result/upload:
+    patch:
+      tags: [occupational]
+      summary: Cargar resultado IPS con archivo PDF adjunto
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome:         { type: string, enum: [fit, unfit, fit_restrictions] }
+                recommendations: { type: string }
+                file:            { type: string, format: binary }
+      responses:
+        "201": { description: created }
+
+  /api/v1/applications/{id}/endowment-delivery:
+    post:
+      tags: [epp]
+      summary: Registrar entrega de dotación o EPP (kind=epp|dotacion)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:      { type: string, enum: [epp, dotacion] }
+                items:     { type: string, description: "JSON array as string" }
+                signature: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:  { type: string, enum: [epp, dotacion] }
+                items: { type: array, items: { type: object } }
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/{id}/endowment-deliveries:
+    get:
+      tags: [epp]
+      summary: Listar entregas (epp + dotacion) de la postulación
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EndowmentDelivery" }
+
+  /api/v1/admin/outbox:
+    get:
+      tags: [outbox]
+      summary: Listar mensajes en el outbox (admin)
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, sent, failed, cancelled] }
+        - in: query
+          name: channel
+          schema: { type: string, enum: [email, whatsapp, sms] }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OutboxMessage" }
+
+  /api/v1/admin/outbox/{id}/retry:
+    post:
+      tags: [outbox]
+      summary: Re-encolar un mensaje fallido (admin)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200": { description: ok }
+
+  /api/v1/applications/overdue:
+    get:
+      tags: [sla]
+      summary: Postulaciones cuyo estado supera el SLA
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OverdueApplication" }
+
+  /api/v1/reports/pipeline-time.csv:
+    get:
+      tags: [reports]
+      summary: Tiempo medio en cada estado del pipeline
+      responses:
+        "200":
+          description: csv
+          content:
+            text/csv: { schema: { type: string } }
+
+  /api/v1/reports/ips-monthly.csv:
+    get:
+      tags: [reports]
+      summary: Resultados IPS por mes
+      responses:
+        "200":
+          description: csv
+          content:
+            text/csv: { schema: { type: string } }
+
+  /api/v1/reports/onboarding-completed.csv:
+    get:
+      tags: [reports]
+      summary: Onboarding completados en el rango
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: csv
+          content:
+            text/csv: { schema: { type: string } }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -907,6 +1513,8 @@ components:
         public_slug: { type: string }
         published_at: { type: string, nullable: true }
         checklist_template_id: { type: string, format: uuid }
+        role_manual_body: { type: string }
+        role_manual_file_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string }
     PublicVacancy:
       type: object
@@ -964,6 +1572,10 @@ components:
         reviewer_notes: { type: string }
         file_id: { type: string, format: uuid, nullable: true }
         required: { type: boolean }
+        issued_at: { type: string, format: date, nullable: true }
+        max_age_days: { type: integer, nullable: true }
+        requires_template: { type: boolean }
+        requires_issued_at: { type: boolean }
     Completeness:
       type: object
       properties:
@@ -1007,3 +1619,88 @@ components:
         role: { type: string }
         active: { type: boolean }
         created_at: { type: string }
+    DocumentType:
+      type: object
+      properties:
+        item_key:           { type: string }
+        label:              { type: string }
+        requires_vehicle:   { type: boolean }
+        typical_required:   { type: boolean }
+        max_age_days:       { type: integer, nullable: true }
+        requires_template:  { type: boolean }
+        requires_issued_at: { type: boolean }
+        has_template:       { type: boolean }
+        template_file_id:   { type: string, format: uuid, nullable: true }
+    RoleManual:
+      type: object
+      properties:
+        vacancy_id: { type: string, format: uuid }
+        body:       { type: string }
+        file_id:    { type: string, format: uuid, nullable: true }
+    InductionOrgModuleWithMedia:
+      allOf:
+        - $ref: "#/components/schemas/InductionOrgModule"
+        - type: object
+          properties:
+            completed_at:   { type: string, nullable: true }
+            viewed_seconds: { type: integer }
+            media:
+              type: array
+              items: { $ref: "#/components/schemas/InductionOrgMedia" }
+    InductionOrgMedia:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        file_id:          { type: string, format: uuid }
+        kind:             { type: string, enum: [video, image, pdf, audio] }
+        title:            { type: string }
+        sort_order:       { type: integer }
+        duration_seconds: { type: integer, nullable: true }
+    FunctionalActivity:
+      type: object
+      properties:
+        id:                { type: string, format: uuid }
+        phase:             { type: string, enum: [theory, practice] }
+        sort_order:        { type: integer }
+        title:             { type: string }
+        description:       { type: string }
+        evidence_required: { type: boolean }
+        evidence_notes:    { type: string }
+        completed_at:      { type: string, nullable: true }
+        evidence_file_ids:
+          type: array
+          items: { type: string, format: uuid }
+        audiovisual_file_id: { type: string, format: uuid, nullable: true }
+    EndowmentDelivery:
+      type: object
+      properties:
+        id:                { type: string, format: uuid }
+        kind:              { type: string, enum: [epp, dotacion] }
+        items_json:        { type: array, items: { type: object } }
+        delivered_at:      { type: string }
+        signature_file_id: { type: string, format: uuid, nullable: true }
+    OutboxMessage:
+      type: object
+      properties:
+        id:            { type: string, format: uuid }
+        channel:       { type: string }
+        to:            { type: string }
+        subject:       { type: string }
+        status:        { type: string }
+        attempts:      { type: integer }
+        last_error:    { type: string }
+        scheduled_for: { type: string }
+        sent_at:       { type: string, nullable: true }
+        created_at:    { type: string }
+    OverdueApplication:
+      type: object
+      properties:
+        id:            { type: string, format: uuid }
+        first_name:    { type: string }
+        last_name:     { type: string }
+        email:         { type: string }
+        status:        { type: string }
+        updated_at:    { type: string }
+        sla_max_days:  { type: integer }
+        days_in_state: { type: integer }
+        overdue_by:    { type: integer }

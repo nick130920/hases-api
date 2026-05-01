@@ -1,7 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -241,27 +245,59 @@ func (s *Server) addInductionSignatureMultipart(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
 		return
 	}
-	if err := r.ParseMultipartForm(s.Cfg.UploadMaxBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "multipart"})
-		return
+	s.handleInductionSignature(w, r, aid)
+}
+
+// handleInductionSignature acepta multipart con campos `kind` y `file`,
+// o JSON con `kind` y `signature_data` (data URI base64). Captura ip y
+// user-agent en metadata para trazabilidad legal.
+func (s *Server) handleInductionSignature(w http.ResponseWriter, r *http.Request, aid uuid.UUID) {
+	ct := r.Header.Get("Content-Type")
+	var kind string
+	var fid uuid.UUID
+	if strings.HasPrefix(ct, "multipart/") {
+		if err := r.ParseMultipartForm(s.Cfg.UploadMaxBytes); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "multipart"})
+			return
+		}
+		kind = strings.TrimSpace(r.FormValue("kind"))
+		var status int
+		var err error
+		fid, status, err = s.persistFormFile(r, "file")
+		if err != nil {
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+	} else {
+		var body struct {
+			Kind          string `json:"kind"`
+			SignatureData string `json:"signature_data"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "json"})
+			return
+		}
+		kind = strings.TrimSpace(body.Kind)
+		var status int
+		var err error
+		fid, status, err = s.persistDataURI(r.Context(), body.SignatureData, "signature.png")
+		if err != nil {
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
 	}
-	kind := strings.TrimSpace(r.FormValue("kind"))
 	switch kind {
 	case "regulation", "policies", "contract":
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kind"})
 		return
 	}
-	fid, status, err := s.persistFormFile(r, "file")
-	if err != nil {
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
+	meta := s.signatureMetadataJSON(r, fid)
 	var sigID uuid.UUID
-	err = s.Pool.QueryRow(r.Context(), `
+	err := s.Pool.QueryRow(r.Context(), `
 		INSERT INTO induction_signatures (application_id, kind, signature_file_id, metadata)
-		VALUES ($1,$2,$3,'{}'::jsonb) RETURNING id`,
-		aid, kind, fid).Scan(&sigID)
+		VALUES ($1,$2,$3,$4::jsonb) RETURNING id`,
+		aid, kind, fid, meta).Scan(&sigID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -351,6 +387,11 @@ func (s *Server) addFunctionalEvidenceUnified(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id"})
 		return
 	}
+	s.handleFunctionalEvidence(w, r, aid)
+}
+
+// handleFunctionalEvidence: implementación compartida (staff y portal worker).
+func (s *Server) handleFunctionalEvidence(w http.ResponseWriter, r *http.Request, aid uuid.UUID) {
 	ct := r.Header.Get("Content-Type")
 	var phase, notes, actor string
 	var fileIDs []uuid.UUID
@@ -557,6 +598,77 @@ func (s *Server) persistMultipartHeader(ctx context.Context, hdr *multipart.File
 	}
 	defer f.Close()
 	return s.writeFileFromReader(ctx, f, hdr.Filename, hdr.Header.Get("Content-Type"), hdr.Size)
+}
+
+// persistDataURI persiste una imagen recibida como data URI (data:image/png;base64,...).
+// Usado por la captura de firma desde un canvas en el portal del trabajador.
+func (s *Server) persistDataURI(ctx context.Context, dataURI, filename string) (uuid.UUID, int, error) {
+	dataURI = strings.TrimSpace(dataURI)
+	if dataURI == "" {
+		return uuid.Nil, http.StatusBadRequest, errors.New("signature_data missing")
+	}
+	const prefix = "data:"
+	if !strings.HasPrefix(dataURI, prefix) {
+		return uuid.Nil, http.StatusBadRequest, errors.New("signature_data must be data URI")
+	}
+	commaIdx := strings.Index(dataURI, ",")
+	if commaIdx < 0 {
+		return uuid.Nil, http.StatusBadRequest, errors.New("signature_data malformed")
+	}
+	header := dataURI[len(prefix):commaIdx]
+	payload := dataURI[commaIdx+1:]
+	mime := strings.TrimSuffix(header, ";base64")
+	if mime == "" {
+		mime = "image/png"
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return uuid.Nil, http.StatusBadRequest, errors.New("signature_data invalid base64")
+	}
+	return s.writeFileFromReader(ctx, bytes.NewReader(decoded), filename, mime, int64(len(decoded)))
+}
+
+// signatureMetadata serializa la metadata para auditoría legal de una firma:
+// ip, user-agent, sha256 del archivo, actor user id, file_id.
+func (s *Server) signatureMetadataJSON(r *http.Request, fid uuid.UUID) []byte {
+	ip := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
+	hash := s.signatureFileSHA256Of(r.Context(), fid)
+	cl := ClaimsFromCtx(r)
+	var actor string
+	if cl != nil {
+		actor = cl.UserID.String()
+	}
+	meta := map[string]any{
+		"ip":         ip,
+		"user_agent": r.Header.Get("User-Agent"),
+		"actor":      actor,
+		"sha256":     hash,
+		"file_id":    fid.String(),
+	}
+	b, _ := json.Marshal(meta)
+	return b
+}
+
+// signatureFileSHA256Of calcula sha256 del archivo persistido para la metadata.
+// Si falla devuelve cadena vacía (metadata complementaria, no crítica).
+func (s *Server) signatureFileSHA256Of(ctx context.Context, fileID uuid.UUID) string {
+	var key string
+	if err := s.Pool.QueryRow(ctx, `SELECT storage_key FROM files WHERE id=$1`, fileID).Scan(&key); err != nil {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(s.Cfg.StorageDir, key))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (s *Server) writeFileFromReader(ctx context.Context, src io.Reader, filename, mime string, declaredSize int64) (uuid.UUID, int, error) {
