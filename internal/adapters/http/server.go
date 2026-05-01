@@ -148,18 +148,22 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/applications/{id}/invite", s.inviteApplicationToPortal)
 			r.Post("/applications/{id}/hiring-decision", s.hiringDecision)
 
-			r.Route("/me", func(r chi.Router) {
+			// Worker portal endpoints under /me/*. Using chi.Group with absolute
+			// paths (instead of chi.Route("/me", ...)) so the requireWorker
+			// middleware does not capture the bare GET /me endpoint above,
+			// which is the identity endpoint shared by all roles.
+			r.Group(func(r chi.Router) {
 				r.Use(s.requireWorker)
-				r.Get("/application", s.workerGetApplication)
-				r.Post("/application/documents/{itemID}/upload", s.workerUploadDocument)
-				r.Get("/induction/org-modules", s.workerListInductionModules)
-				r.Post("/induction/org-progress", s.workerUpsertProgress)
-				r.Patch("/induction/progress/{moduleID}", s.workerProgressTick)
-				r.Post("/induction/signatures", s.workerSignature)
-				r.Get("/functional-plan", s.workerFunctionalPlan)
-				r.Post("/functional/evidence", s.workerEvidence)
-				r.Get("/functional/activities", s.workerListFunctionalActivities)
-				r.Post("/functional/activities/{aid}/complete", s.workerCompleteFunctionalActivity)
+				r.Get("/me/application", s.workerGetApplication)
+				r.Post("/me/application/documents/{itemID}/upload", s.workerUploadDocument)
+				r.Get("/me/induction/org-modules", s.workerListInductionModules)
+				r.Post("/me/induction/org-progress", s.workerUpsertProgress)
+				r.Patch("/me/induction/progress/{moduleID}", s.workerProgressTick)
+				r.Post("/me/induction/signatures", s.workerSignature)
+				r.Get("/me/functional-plan", s.workerFunctionalPlan)
+				r.Post("/me/functional/evidence", s.workerEvidence)
+				r.Get("/me/functional/activities", s.workerListFunctionalActivities)
+				r.Post("/me/functional/activities/{aid}/complete", s.workerCompleteFunctionalActivity)
 			})
 
 			r.Get("/applications/{id}/functional/activities", s.listFunctionalActivities)
