@@ -1,0 +1,16 @@
+---
+description: Reglas para mensajes de commit en este repositorio
+alwaysApply: true
+---
+
+# Mensajes de commit
+
+- Nunca añadir trailers ni firmas tipo `Made-with: Cursor`,
+  `Generated-by: ...`, `Co-authored-by: assistant@...` ni similares.
+  Los commits deben quedar limpios, sin marcas de herramientas.
+- Usar prefijos convencionales en minúscula: `feat:`, `fix:`,
+  `chore:`, `docs:`, `refactor:`, `test:` (con scope opcional como
+  `fix(routes):`).
+- Asunto en imperativo y máximo ~72 caracteres.
+- Cuerpo opcional con bullets `*` que expliquen el "porqué", no el
+  "qué" (el diff ya muestra el qué).

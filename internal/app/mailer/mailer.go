@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"net/mail"
 	"net/smtp"
 	"strings"
 
@@ -24,6 +25,18 @@ func (m *Mailer) Enabled() bool {
 	return strings.TrimSpace(m.cfg.SMTPHost) != "" && strings.TrimSpace(m.cfg.SMTPFrom) != ""
 }
 
+// envelopeFrom returns just the email address from SMTP_FROM, supporting
+// both plain "user@host" and display-name forms like "Name <user@host>".
+// SMTP envelopes (MAIL FROM) require a bare address, while the From header
+// can carry the full display name.
+func (m *Mailer) envelopeFrom() string {
+	addr, err := mail.ParseAddress(m.cfg.SMTPFrom)
+	if err != nil {
+		return strings.TrimSpace(m.cfg.SMTPFrom)
+	}
+	return addr.Address
+}
+
 // Send envía un email simple con cuerpo en texto plano.
 func (m *Mailer) Send(to, subject, body string) error {
 	if !m.Enabled() {
@@ -35,7 +48,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		m.cfg.SMTPFrom, to, subject, body,
 	))
-	return smtp.SendMail(addr, auth, m.cfg.SMTPFrom, []string{to}, msg)
+	return smtp.SendMail(addr, auth, m.envelopeFrom(), []string{to}, msg)
 }
 
 // SendWithAttachment envía un email multipart/mixed con un único adjunto.
@@ -79,5 +92,5 @@ func (m *Mailer) SendWithAttachment(to, subject, body, filename, mime string, da
 	}
 	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
 
-	return smtp.SendMail(addr, auth, m.cfg.SMTPFrom, []string{to}, buf.Bytes())
+	return smtp.SendMail(addr, auth, m.envelopeFrom(), []string{to}, buf.Bytes())
 }
