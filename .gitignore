@@ -21,6 +21,9 @@ coverage.html
 # Almacenamiento local de archivos subidos
 /storage/
 
+# Salidas temporales (previews de correo, scratch)
+/tmp/
+
 # IDE / SO
 .vscode/
 .idea/

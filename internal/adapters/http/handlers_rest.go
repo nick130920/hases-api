@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/hases/hases-api/internal/app/mailer"
 	"github.com/hases/hases-api/internal/auth"
 	"github.com/hases/hases-api/internal/domain"
 )
@@ -542,13 +543,17 @@ func (s *Server) transitionApplication(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), uid, "application", &id, "transition:"+body.Status, nil)
 
 	if s.Mailer != nil && s.Mailer.Enabled() {
-		var em, fn string
+		var em, fn, ln string
 		if err := s.Pool.QueryRow(r.Context(),
-			`SELECT email, first_name FROM applications WHERE id=$1`, id,
-		).Scan(&em, &fn); err == nil && em != "" {
-			subj := "Actualización de tu postulación"
-			text := "Hola " + fn + ",\n\nEl estado de tu proceso ha cambiado a: " + body.Status + ".\n\nGracias."
-			_ = s.Mailer.Send(em, subj, text)
+			`SELECT email, first_name, last_name FROM applications WHERE id=$1`, id,
+		).Scan(&em, &fn, &ln); err == nil && em != "" {
+			tpl := mailer.RenderStatusUpdate(mailer.StatusUpdateData{
+				FullName:    strings.TrimSpace(fn + " " + ln),
+				StatusLabel: domain.StatusLabel(body.Status),
+				Status:      body.Status,
+				Message:     statusUpdateCopy(body.Status),
+			})
+			_ = s.Mailer.SendHTML(em, "Actualización de tu postulación HASES", tpl.HTML, tpl.Text)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": body.Status})
@@ -559,6 +564,45 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// statusUpdateCopy retorna un copy contextual para el correo de cambio de
+// estado segun la etapa del pipeline. Si el estado no esta mapeado se devuelve
+// "" y la plantilla cae al texto generico.
+func statusUpdateCopy(status string) string {
+	switch status {
+	case domain.StatusDocsPending:
+		return "Pasamos a la etapa de carga documental. Por favor revisa el listado de documentos requeridos y súbelos cuando los tengas listos."
+	case domain.StatusDocsIncomplete:
+		return "Detectamos que algunos documentos están incompletos o pendientes de corrección. Por favor revísalos y vuelve a cargarlos para que podamos continuar tu proceso."
+	case domain.StatusDocsReview:
+		return "Recibimos tus documentos y los estamos revisando. En breve te notificaremos el resultado de la verificación documental."
+	case domain.StatusDocsApproved:
+		return "Tus documentos fueron aprobados. Continuaremos con la etapa de entrevista, te contactaremos pronto para coordinarla."
+	case domain.StatusInterviewPending:
+		return "Tu proceso avanza a la etapa de entrevista. El equipo de selección se pondrá en contacto contigo para agendar el encuentro."
+	case domain.StatusInterviewDone:
+		return "La entrevista quedó registrada. Estamos consolidando la evaluación antes de dar el siguiente paso."
+	case domain.StatusOccPending:
+		return "Programaremos tu examen ocupacional con la IPS. Te llegará la información de la cita una vez se confirme con el proveedor."
+	case domain.StatusOccSent:
+		return "Enviamos tu formato de examen ocupacional a la IPS. Cuando recibamos los resultados te avisaremos para continuar."
+	case domain.StatusOccResult:
+		return "Recibimos tus resultados ocupacionales. Pasarán a revisión interna para tomar la decisión de contratación."
+	case domain.StatusHiringPending:
+		return "Tu expediente quedó listo para decisión final. El equipo de gestión humana lo está revisando para emitir respuesta en los próximos días."
+	case domain.StatusInductionOrg:
+		return "Inicia tu inducción organizacional. Desde el portal del trabajador podrás acceder a los módulos y firmar las constancias."
+	case domain.StatusInductionTheory:
+		return "Pasamos a la fase teórica de la inducción. Revisa los módulos audiovisuales asignados desde el portal del trabajador."
+	case domain.StatusInductionEppPending:
+		return "Programaremos la entrega de tus elementos de protección personal y la dotación correspondiente al cargo."
+	case domain.StatusInductionPractice:
+		return "Inicia la fase práctica de tu inducción. Recuerda dejar evidencia de las actividades en el portal del trabajador."
+	case domain.StatusOnboardingComplete:
+		return "Felicitaciones, completaste tu proceso de onboarding. Bienvenido formalmente al equipo HASES."
+	}
+	return ""
 }
 
 func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request) {
