@@ -43,6 +43,15 @@ func main() {
 			Hired:    false,
 			Reason:   "El perfil no se ajusta a los requisitos técnicos del cargo en esta convocatoria.",
 		}),
+		"staff_welcome.html": mailer.RenderStaffWelcome(mailer.StaffWelcomeData{
+			FullName:  "Carolina Pérez",
+			Email:     "carolina.perez@hases.local",
+			Password:  "Hases#Temp_2026",
+			Role:      "hr",
+			RoleLabel: domain.RoleLabel("hr"),
+			LoginURL:  "https://hases-web-production.up.railway.app/login",
+			CreatedBy: "admin@hases.local",
+		}),
 	}
 
 	for name, tpl := range cases {

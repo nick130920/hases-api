@@ -59,6 +59,18 @@ type StatusUpdateData struct {
 	LinkLabel   string // texto del CTA opcional
 }
 
+// StaffWelcomeData feeds the welcome email sent to new backoffice users
+// (admin, hr, evaluator, hiring_manager) cuando un admin los crea.
+type StaffWelcomeData struct {
+	FullName  string
+	Email     string
+	Password  string // contrasena temporal en texto plano (la define el admin)
+	RoleLabel string
+	Role      string
+	LoginURL  string // URL al login del backoffice
+	CreatedBy string // nombre o email del admin que dio de alta (opcional)
+}
+
 // RenderInvitation builds the worker portal invitation email.
 func RenderInvitation(d InvitationData) Template {
 	link := strings.TrimSpace(d.Link)
@@ -150,6 +162,119 @@ Te informamos que tu candidatura no continúa en el proceso. Agradecemos tu inte
 %sSaludos,
 Equipo HASES`, greet, reasonText)
 	return Template{HTML: layout("Resultado del proceso HASES", "Resultado del proceso", body), Text: text}
+}
+
+// RenderStaffWelcome builds the welcome email sent to new backoffice users.
+// Incluye un bloque destacado con email + contrasena inicial y un boton al
+// login. El copy invita a cambiar la contrasena cuanto antes.
+func RenderStaffWelcome(d StaffWelcomeData) Template {
+	greet := salutation(d.FullName)
+	role := strings.TrimSpace(d.RoleLabel)
+	if role == "" {
+		role = strings.TrimSpace(d.Role)
+	}
+	if role == "" {
+		role = "Equipo"
+	}
+
+	createdLine := ""
+	if cb := strings.TrimSpace(d.CreatedBy); cb != "" {
+		createdLine = fmt.Sprintf(`<p style="margin:0 0 20px;%s">Tu cuenta fue creada por <strong>%s</strong>.</p>`,
+			styleMuted(), html.EscapeString(cb))
+	}
+
+	cta := ""
+	if link := strings.TrimSpace(d.LoginURL); link != "" {
+		cta = button(link, "Ir al ingreso del backoffice")
+	}
+
+	body := fmt.Sprintf(`
+		%s
+		<p style="margin:24px 0 12px;%s">%s,</p>
+		<p style="margin:0 0 12px;%s">Te damos la bienvenida al sistema interno de gestion humana de HASES Ingenieria. Tu cuenta ya esta activa con el rol <strong>%s</strong>.</p>
+		%s
+		%s
+		%s
+		%s
+		<p style="margin:20px 0 0;%s">Por seguridad, te recomendamos iniciar sesion y cambiar tu contrasena lo antes posible. Si no esperabas este correo, ignoralo o avisanos respondiendo a tu administrador.</p>
+	`,
+		highlightBanner(colorAccentSoft, colorAccent, "Cuenta creada", "Bienvenido al equipo HASES"),
+		styleBody(), html.EscapeString(greet),
+		styleBody(), html.EscapeString(role),
+		createdLine,
+		credentialsBlock(d.Email, d.Password),
+		rolePill(role),
+		cta,
+		styleMuted(),
+	)
+
+	textBody := fmt.Sprintf(`%s,
+
+Te damos la bienvenida al sistema interno de gestion humana de HASES Ingenieria. Tu cuenta ya esta activa con el rol %s.
+
+Credenciales iniciales:
+  Correo: %s
+  Contrasena: %s
+
+Inicia sesion en: %s
+
+Por seguridad, cambia tu contrasena la primera vez que ingreses.
+
+Saludos,
+Equipo HASES`, greet, role, d.Email, d.Password, strings.TrimSpace(d.LoginURL))
+
+	return Template{HTML: layout("Bienvenido al sistema HASES", "Tu cuenta esta lista", body), Text: textBody}
+}
+
+// credentialsBlock muestra correo + contrasena inicial en una caja con
+// formato monoespaciado, separados por etiqueta para que se lean facil.
+func credentialsBlock(email, password string) string {
+	email = strings.TrimSpace(email)
+	password = strings.TrimSpace(password)
+	if email == "" && password == "" {
+		return ""
+	}
+	row := func(label, value string) string {
+		if strings.TrimSpace(value) == "" {
+			return ""
+		}
+		return fmt.Sprintf(`
+		  <tr><td style="padding:6px 0">
+		    <p style="margin:0 0 2px;font-family:%s;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:%s">%s</p>
+		    <p style="margin:0;font-family:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;font-size:14px;color:%s;word-break:break-all">%s</p>
+		  </td></tr>`,
+			fontStack, colorPrimary, html.EscapeString(label),
+			colorOnSurface, html.EscapeString(value),
+		)
+	}
+	return fmt.Sprintf(`
+		<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%%" style="margin:0 0 16px">
+		  <tr><td style="background:%s;border:1px solid %s;border-radius:10px;padding:14px 18px">
+		    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%%">
+		      %s
+		      %s
+		    </table>
+		  </td></tr>
+		</table>`,
+		colorAccentSoft, colorOutline,
+		row("Correo de acceso", email),
+		row("Contrasena temporal", password),
+	)
+}
+
+// rolePill renderiza un chip con el rol asignado.
+func rolePill(label string) string {
+	return fmt.Sprintf(`
+		<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px">
+		  <tr><td style="background:%s;border:1px solid %s;border-radius:9999px;padding:8px 16px">
+		    <span style="font-family:%s;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:%s">Rol asignado</span>
+		    <span style="font-family:%s;font-size:14px;font-weight:600;color:%s;margin-left:8px">%s</span>
+		  </td></tr>
+		</table>`,
+		colorPrimaryMuted, colorOutline,
+		fontStack, colorPrimary,
+		fontStack, colorPrimary, html.EscapeString(label),
+	)
 }
 
 // RenderStatusUpdate builds the email sent when the pipeline status of an

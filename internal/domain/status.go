@@ -35,6 +35,23 @@ func StatusLabel(status string) string {
 	return status
 }
 
+// RoleLabel devuelve el nombre legible de un rol del backoffice/portal,
+// usado en correos transaccionales y otros textos visibles.
+func RoleLabel(role string) string {
+	if v, ok := roleLabels[role]; ok {
+		return v
+	}
+	return role
+}
+
+var roleLabels = map[string]string{
+	"admin":          "Administrador",
+	"hr":             "Gestión humana (RR.HH.)",
+	"evaluator":      "Evaluador",
+	"hiring_manager": "Hiring manager",
+	"worker":         "Trabajador",
+}
+
 var statusLabels = map[string]string{
 	StatusApplied:             "Postulación recibida",
 	StatusDocsPending:         "Documentos pendientes",

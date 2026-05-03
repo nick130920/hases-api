@@ -1148,13 +1148,75 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hash"})
 		return
 	}
+	emailLower := strings.ToLower(strings.TrimSpace(body.Email))
 	var id uuid.UUID
 	err = s.Pool.QueryRow(r.Context(), `
 		INSERT INTO users (email, password_hash, full_name, role) VALUES ($1,$2,$3,$4) RETURNING id`,
-		strings.ToLower(strings.TrimSpace(body.Email)), hash, body.FullName, body.Role).Scan(&id)
+		emailLower, hash, body.FullName, body.Role).Scan(&id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	s.sendStaffWelcome(r.Context(), staffWelcomeArgs{
+		To:        emailLower,
+		FullName:  strings.TrimSpace(body.FullName),
+		Password:  body.Password,
+		Role:      body.Role,
+		CreatedBy: requesterDisplayName(r),
+	})
+
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id.String()})
+}
+
+// staffWelcomeArgs agrupa los datos minimos para enviar el correo de bienvenida
+// a un usuario del backoffice recien creado.
+type staffWelcomeArgs struct {
+	To        string
+	FullName  string
+	Password  string
+	Role      string
+	CreatedBy string
+}
+
+func (s *Server) sendStaffWelcome(ctx context.Context, args staffWelcomeArgs) {
+	if s.Mailer == nil || !s.Mailer.Enabled() {
+		return
+	}
+	to := strings.TrimSpace(args.To)
+	if to == "" {
+		return
+	}
+	loginURL := strings.TrimRight(s.Cfg.PortalBaseURL, "/") + "/login"
+	tpl := mailer.RenderStaffWelcome(mailer.StaffWelcomeData{
+		FullName:  args.FullName,
+		Email:     to,
+		Password:  args.Password,
+		Role:      args.Role,
+		RoleLabel: domain.RoleLabel(args.Role),
+		LoginURL:  loginURL,
+		CreatedBy: args.CreatedBy,
+	})
+	// Enviamos en goroutine para no bloquear la respuesta del POST. Si falla
+	// el envio dejamos rastro en logs (Mailer ya formatea sus errores).
+	go func() {
+		if err := s.Mailer.SendHTML(to, "Bienvenido al sistema HASES", tpl.HTML, tpl.Text); err != nil {
+			// Aprovechamos el contexto solo para evitar advertencias del compilador;
+			// el envio en si no se cancela porque corre fuera del request.
+			_ = ctx
+		}
+	}()
+}
+
+// requesterDisplayName intenta deducir el nombre o email del usuario actual
+// para el correo de bienvenida. Cae a "" si no se puede resolver.
+func requesterDisplayName(r *http.Request) string {
+	cl := ClaimsFromCtx(r)
+	if cl == nil {
+		return ""
+	}
+	if e := strings.TrimSpace(cl.Email); e != "" {
+		return e
+	}
+	return ""
 }
