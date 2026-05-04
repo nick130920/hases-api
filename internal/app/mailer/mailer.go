@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/mail"
@@ -67,24 +68,51 @@ func (m *Mailer) envelopeFrom() string {
 	return addr.Address
 }
 
+// transport devuelve el nombre del transporte activo, util para los logs.
+func (m *Mailer) transport() string {
+	if m.usingResend() {
+		return "resend"
+	}
+	if m.usingSMTP() {
+		return "smtp"
+	}
+	return "disabled"
+}
+
+// logSend produce un log uniforme para cada intento de envio. Se llama desde
+// los wrappers Send/SendHTML/SendWithAttachment para que cualquier consumidor
+// que ignore el error igual pueda diagnosticar fallos en los logs de Railway.
+func (m *Mailer) logSend(kind, to, subject string, err error) {
+	if err != nil {
+		log.Printf("mailer[%s] %s send to=%s subject=%q FAILED: %v", m.transport(), kind, to, subject, err)
+		return
+	}
+	log.Printf("mailer[%s] %s send to=%s subject=%q OK", m.transport(), kind, to, subject)
+}
+
 // Send envía un email simple en texto plano.
 func (m *Mailer) Send(to, subject, body string) error {
 	if !m.Enabled() {
+		log.Printf("mailer[disabled] skip send to=%s subject=%q (no transport configured)", to, subject)
 		return nil
 	}
+	var err error
 	if m.usingResend() {
-		return m.sendViaResend(resendPayload{
+		err = m.sendViaResend(resendPayload{
 			From:    m.cfg.SMTPFrom,
 			To:      []string{to},
 			Subject: subject,
 			Text:    body,
 		})
+	} else {
+		msg := []byte(fmt.Sprintf(
+			"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+			m.cfg.SMTPFrom, to, subject, body,
+		))
+		err = m.deliverSMTP(to, msg)
 	}
-	msg := []byte(fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		m.cfg.SMTPFrom, to, subject, body,
-	))
-	return m.deliverSMTP(to, msg)
+	m.logSend("text", to, subject, err)
+	return err
 }
 
 // SendHTML envía un email con cuerpo HTML y un fallback en texto plano para
@@ -92,31 +120,38 @@ func (m *Mailer) Send(to, subject, body string) error {
 // botones o enlaces accionables (invitaciones, magic links, etc.).
 func (m *Mailer) SendHTML(to, subject, html, text string) error {
 	if !m.Enabled() {
+		log.Printf("mailer[disabled] skip html send to=%s subject=%q (no transport configured)", to, subject)
 		return nil
 	}
+	var err error
 	if m.usingResend() {
-		return m.sendViaResend(resendPayload{
+		err = m.sendViaResend(resendPayload{
 			From:    m.cfg.SMTPFrom,
 			To:      []string{to},
 			Subject: subject,
 			Text:    text,
 			HTML:    html,
 		})
+	} else {
+		err = m.deliverSMTP(to, m.buildAlternative(to, subject, text, html))
 	}
-	return m.deliverSMTP(to, m.buildAlternative(to, subject, text, html))
+	m.logSend("html", to, subject, err)
+	return err
 }
 
 // SendWithAttachment envía un email multipart/mixed con un único adjunto.
 // Útil para enviar PDFs (ej. examen ocupacional a la IPS).
 func (m *Mailer) SendWithAttachment(to, subject, body, filename, mimeType string, data []byte) error {
 	if !m.Enabled() {
+		log.Printf("mailer[disabled] skip attachment send to=%s subject=%q (no transport configured)", to, subject)
 		return nil
 	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
+	var err error
 	if m.usingResend() {
-		return m.sendViaResend(resendPayload{
+		err = m.sendViaResend(resendPayload{
 			From:    m.cfg.SMTPFrom,
 			To:      []string{to},
 			Subject: subject,
@@ -127,8 +162,11 @@ func (m *Mailer) SendWithAttachment(to, subject, body, filename, mimeType string
 				ContentType: mimeType,
 			}},
 		})
+	} else {
+		err = m.deliverSMTP(to, m.buildMultipart(to, subject, body, filename, mimeType, data))
 	}
-	return m.deliverSMTP(to, m.buildMultipart(to, subject, body, filename, mimeType, data))
+	m.logSend("attachment", to, subject, err)
+	return err
 }
 
 // ---- Resend HTTP API ----

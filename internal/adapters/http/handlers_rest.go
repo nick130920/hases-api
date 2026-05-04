@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -1179,8 +1180,9 @@ type staffWelcomeArgs struct {
 	CreatedBy string
 }
 
-func (s *Server) sendStaffWelcome(ctx context.Context, args staffWelcomeArgs) {
+func (s *Server) sendStaffWelcome(_ context.Context, args staffWelcomeArgs) {
 	if s.Mailer == nil || !s.Mailer.Enabled() {
+		log.Printf("staff welcome skipped: mailer disabled (to=%s)", args.To)
 		return
 	}
 	to := strings.TrimSpace(args.To)
@@ -1197,14 +1199,11 @@ func (s *Server) sendStaffWelcome(ctx context.Context, args staffWelcomeArgs) {
 		LoginURL:  loginURL,
 		CreatedBy: args.CreatedBy,
 	})
-	// Enviamos en goroutine para no bloquear la respuesta del POST. Si falla
-	// el envio dejamos rastro en logs (Mailer ya formatea sus errores).
+	// Enviamos en goroutine para no bloquear la respuesta del POST. El Mailer
+	// loguea exito/fallo internamente, asi que aqui solo agregamos contexto.
 	go func() {
-		if err := s.Mailer.SendHTML(to, "Bienvenido al sistema HASES", tpl.HTML, tpl.Text); err != nil {
-			// Aprovechamos el contexto solo para evitar advertencias del compilador;
-			// el envio en si no se cancela porque corre fuera del request.
-			_ = ctx
-		}
+		log.Printf("staff welcome dispatch to=%s role=%s portal=%s", to, args.Role, loginURL)
+		_ = s.Mailer.SendHTML(to, "Bienvenido al sistema HASES", tpl.HTML, tpl.Text)
 	}()
 }
 
